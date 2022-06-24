@@ -1,9 +1,11 @@
-import { Stack, StackProps } from 'aws-cdk-lib';
+import { Stack, StackProps, RemovalPolicy, SecretValue } from 'aws-cdk-lib';
 import {
   aws_elasticloadbalancingv2 as elbv2,
   aws_ecs as ecs,
   aws_ecr as ecr,
   aws_ec2 as ec2,
+  aws_rds as rds,
+  aws_secretsmanager as secretsmanager,
 } from 'aws-cdk-lib';
 import { DockerImageAsset } from 'aws-cdk-lib/aws-ecr-assets';
 import * as ecrdeploy from 'cdk-ecr-deployment';
@@ -57,6 +59,46 @@ export class EcsDeploySampleStack extends Stack {
     })
     securityGroupAPP.addIngressRule(securityGroupELB, ec2.Port.tcp(3000), 'Allow HTTP traffic from the ELB')
 
+    // Security Group PostgreSQL
+    const securityGroupRDS = new ec2.SecurityGroup(this, 'SecurityGroupRDS', {
+      vpc,
+      description: 'Security group RDS',
+      securityGroupName: 'SGRDS',
+    })
+    securityGroupRDS.addIngressRule(securityGroupAPP, ec2.Port.tcp(5432), 'Allow PostgreSQL traffic from the APP')
+
+    // RDS for PostgreSQL
+    const databaseCredentialSecret = new secretsmanager.Secret(this, 'databaseCredentialSecret', {
+      secretName: "postgresql",
+      generateSecretString: {
+        excludePunctuation: true,
+        includeSpace: false,
+        secretStringTemplate: JSON.stringify({
+          username: 'dbuser',
+        }),
+        generateStringKey: 'password',
+      }
+    })
+
+    const postgresql = new rds.DatabaseInstance(this, 'postgresql', {
+      engine: rds.DatabaseInstanceEngine.POSTGRES,
+      vpc,
+      vpcSubnets: {
+        subnetType: ec2.SubnetType.PRIVATE_ISOLATED
+      },
+      instanceType: ec2.InstanceType.of(ec2.InstanceClass.BURSTABLE3, ec2.InstanceSize.MICRO),
+      securityGroups: [securityGroupRDS],
+      // multiAz: true,
+      databaseName: 'testdatabase',
+      removalPolicy: RemovalPolicy.DESTROY,
+      credentials: rds.Credentials.fromPassword(
+        databaseCredentialSecret.secretValueFromJson('username').toString(),
+        SecretValue.plainText(
+          databaseCredentialSecret.secretValueFromJson('password').toString()
+        )
+      ),
+    })
+
     // Application Load Balancer
     const alb = new elbv2.ApplicationLoadBalancer(this, 'ALB', {
       vpc,
@@ -89,7 +131,7 @@ export class EcsDeploySampleStack extends Stack {
 
     // ECR
     const repository = new ecr.Repository(this, 'Repository', {
-      repositoryName: 'rails-test',
+      repositoryName: 'rails',
       imageScanOnPush: true,
     })
 
@@ -122,6 +164,13 @@ export class EcsDeploySampleStack extends Stack {
       image: ecs.ContainerImage.fromEcrRepository(repository),
       memoryLimitMiB: 256,
       cpu: 256,
+      environment: {
+        DB_HOST: postgresql.instanceEndpoint.hostname,
+        DB_PORT: String(postgresql.instanceEndpoint.port),
+        DB_NAME: 'testdatabase',
+        DB_USER: databaseCredentialSecret.secretValueFromJson('username').toString(),
+        APP_DATABASE_PASSWORD: databaseCredentialSecret.secretValueFromJson('password').toString(),
+      },
     })
 
     container.addPortMappings({
