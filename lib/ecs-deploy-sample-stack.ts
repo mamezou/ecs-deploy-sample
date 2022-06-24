@@ -2,8 +2,12 @@ import { Stack, StackProps } from 'aws-cdk-lib';
 import {
   aws_elasticloadbalancingv2 as elbv2,
   aws_ecs as ecs,
+  aws_ecr as ecr,
   aws_ec2 as ec2,
 } from 'aws-cdk-lib';
+import { DockerImageAsset } from 'aws-cdk-lib/aws-ecr-assets';
+import * as ecrdeploy from 'cdk-ecr-deployment';
+import * as path from 'path';
 import { Construct } from 'constructs';
 
 export class EcsDeploySampleStack extends Stack {
@@ -51,7 +55,7 @@ export class EcsDeploySampleStack extends Stack {
       description: 'Security group APP',
       securityGroupName: 'SGAPP',
     })
-    securityGroupAPP.addIngressRule(securityGroupELB, ec2.Port.tcp(80), 'Allow HTTP traffic from the ELB')
+    securityGroupAPP.addIngressRule(securityGroupELB, ec2.Port.tcp(3000), 'Allow HTTP traffic from the ELB')
 
     // Application Load Balancer
     const alb = new elbv2.ApplicationLoadBalancer(this, 'ALB', {
@@ -69,13 +73,30 @@ export class EcsDeploySampleStack extends Stack {
     // Target Group
     const targetGroup = new elbv2.ApplicationTargetGroup(this, 'TargetGroup', {
       vpc,
-      port: 80,
+      port: 3000,
       protocol: elbv2.ApplicationProtocol.HTTP,
       targetType: elbv2.TargetType.IP,
     })
 
     listener.addTargetGroups('TargetGroup', {
       targetGroups: [targetGroup],
+    })
+
+    // ECR image
+    const asset = new DockerImageAsset(this, 'DockerImageAsset', {
+      directory: path.join(__dirname, '..', 'api'),
+    })
+
+    // ECR
+    const repository = new ecr.Repository(this, 'Repository', {
+      repositoryName: 'rails-test',
+      imageScanOnPush: true,
+    })
+
+    // ECR deployment
+    new ecrdeploy.ECRDeployment(this, 'ECRDeployment', {
+      src: new ecrdeploy.DockerImageName(asset.imageUri),
+      dest: new ecrdeploy.DockerImageName(`${repository.repositoryUri}:latest`),
     })
 
     // ECS cluster
@@ -97,14 +118,15 @@ export class EcsDeploySampleStack extends Stack {
     })
 
     const container = taskDefinition.addContainer('Container', {
-      image: ecs.ContainerImage.fromRegistry('amazon/amazon-ecs-sample'),
+      // image: ecs.ContainerImage.fromRegistry('amazon/amazon-ecs-sample'),
+      image: ecs.ContainerImage.fromEcrRepository(repository),
       memoryLimitMiB: 256,
       cpu: 256,
     })
 
     container.addPortMappings({
-      hostPort: 80,
-      containerPort: 80,
+      hostPort: 3000,
+      containerPort: 3000,
       protocol: ecs.Protocol.TCP,
     })
 
